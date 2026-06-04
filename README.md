@@ -1,49 +1,60 @@
-# Prowler Report Converter
+# Prowler Report Toolkit
 
-This project converts a Prowler HTML report into four Word documents, one for each severity level:
+A set of Python scripts for post-processing [Prowler](https://github.com/prowler-cloud/prowler) HTML scan reports into more shareable formats: CSV, an Excel summary by service/region, and severity-grouped Word documents containing only the FAIL findings.
 
-- `critical.docx`
-- `high.docx`
-- `medium.docx`
-- `low.docx`
+## Scripts
 
-The combined script reads the HTML report directly, so you do not need to run the old CSV export and CSV-to-DOCX steps separately.
+| Script | Input | Output | Purpose |
+| --- | --- | --- | --- |
+| `html2csv.py` | Prowler HTML report | `output.csv` | Extract findings into a cleaned CSV. |
+| `calc-finding.py` | CSV from `html2csv.py` | `prowler_report.xlsx` | Aggregate findings by service, region, and FAIL counts across service x region. |
+| `script.py` | Prowler HTML report | `critical.docx`, `high.docx`, `medium.docx`, `low.docx` | Generate one DOCX per severity, grouped by check, containing FAIL findings only. |
 
 ## Requirements
 
-Install the Python packages used by the script:
-
 ```bash
-python3 -m pip install pandas beautifulsoup4 python-docx
+python3 -m pip install pandas beautifulsoup4 python-docx openpyxl
 ```
 
 ## Usage
 
-1. Download the Prowler report from the scan job.
-2. Run the script against the HTML file:
+### 1. HTML to CSV
+
+```bash
+python3 html2csv.py <input.html> -o output.csv
+```
+
+Extracts the `findingsTable` rows and writes the columns: `Status`, `Severity`, `Service Name`, `Region`, `Check Title`, `Resource ID`, `Status Extended`, `Risk`, `Recommendation`.
+
+### 2. CSV to Excel summary
+
+```bash
+python3 calc-finding.py -f output.csv -o prowler_report.xlsx
+```
+
+Produces a workbook with three sheets:
+
+- **By Service** - status counts per service, sorted by FAIL.
+- **By Region** - status counts per region, sorted by FAIL.
+- **FAIL Service x Region** - pivot of FAIL findings across service and region.
+
+### 3. HTML to DOCX (per severity)
 
 ```bash
 python3 script.py -f <input.html> -o results/
 ```
 
-Example:
-
-```bash
-python3 script.py -f <redacted-report.html> -o results/
-```
-
-## Output
-
-The command creates the output directory if it does not already exist and writes these files inside it:
+Creates the output directory if needed and writes:
 
 - `results/critical.docx`
 - `results/high.docx`
 - `results/medium.docx`
 - `results/low.docx`
 
-Each document contains grouped FAIL findings for that severity.
+Each document groups FAIL findings by check title with description, risk, affected resources, and recommendation.
 
 ## Notes
 
-- The script expects the Prowler HTML report to contain the findings table with `id="findingsTable"`.
+- All HTML parsing expects the Prowler findings table at `id="findingsTable"`.
 - Only findings with `Status = FAIL` are included in the DOCX output.
+- `script.py` reads the HTML directly, so the CSV step is not required to produce the DOCX reports.
