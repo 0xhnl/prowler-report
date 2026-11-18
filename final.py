@@ -557,6 +557,39 @@ def mask_account(account):
     return account[:2] + "*" * (len(account) - 4) + account[-2:]
 
 
+def mask_user_id(user_id):
+    """AIDAXXXXXXXXXXXXXM6V -> AI****M6V. For an assumed role ("AROA...:session")
+    only the ID part is masked and the session name is kept."""
+    if not user_id or "*" in user_id:
+        return user_id
+    uid, sep, session = user_id.partition(":")
+    if len(uid) > 5:
+        uid = uid[:2] + "****" + uid[-3:]
+    return uid + sep + session
+
+
+def mask_arn(arn):
+    """Mask the 12-digit account ID inside an ARN."""
+    if not arn:
+        return arn
+    return re.sub(r"(?<=:)(\d{12})(?=:)", lambda m: mask_account(m.group(1)), arn)
+
+
+def get_caller_identity(profile=None):
+    """Return {"account", "user_id", "arn"} for the current AWS credentials (sts:GetCallerIdentity
+    needs no IAM permissions). Returns {} if boto3 or credentials are not available."""
+    try:
+        import boto3
+        session = boto3.Session(profile_name=profile) if profile else boto3.Session()
+        ident = session.client("sts").get_caller_identity()
+    except Exception as e:  # no boto3, no credentials, expired token, no network...
+        print(f"[!] WARNING: could not get AWS caller identity ({e}); "
+              "use --user-id/--caller-arn or --profile.", file=sys.stderr)
+        return {}
+    print(f"[*] Caller identity: {mask_arn(ident['Arn'])} ({mask_user_id(ident['UserId'])})")
+    return {"account": ident["Account"], "user_id": ident["UserId"], "arn": ident["Arn"]}
+
+
 def enable_update_fields(doc):
     """Ask Word to refresh the TOC, figure/table lists and captions when the file is opened."""
     settings = doc.settings.element
@@ -608,7 +641,14 @@ def build_report(df, meta, args, out_path, by_severity):
 
     fails = df[df["Status"] == "FAIL"]
     scan_date = meta.get("scan_date", date.today())
-    masked = mask_account(meta.get("account", ""))
+    identity = getattr(args, "identity", {}) or {}
+    masked = mask_account(meta.get("account") or identity.get("account", ""))
+    user_id = mask_user_id(args.user_id or identity.get("user_id")) or "[AWS User ID]"
+    caller_arn = mask_arn(args.caller_arn or identity.get("arn")) or f"arn:aws:iam::{masked}:user/[user]"
+    if identity.get("account") and meta.get("account") and identity["account"] != meta["account"]:
+        print(f"[!] WARNING: current AWS credentials ({mask_account(identity['account'])}) are not "
+              f"the scanned account ({masked}); check --profile / --user-id / --caller-arn.",
+              file=sys.stderr)
 
     finding_summary, service_summary, region_summary, notable = narrative(fails, by_severity)
 
@@ -629,8 +669,8 @@ def build_report(df, meta, args, out_path, by_severity):
         "{{END_DATE}}": end,
         "{{REPORT_DATE}}": fmt_date(report_date(args)),
         "{{ACCOUNT}}": masked,
-        "{{USER_ID}}": args.user_id,
-        "{{CALLER_ARN}}": args.caller_arn or f"arn:aws:iam::{masked}:user/[user]",
+        "{{USER_ID}}": user_id,
+        "{{CALLER_ARN}}": caller_arn,
         "{{PROWLER_VERSION}}": meta.get("prowler_version") or "[version]",
         "{{FINDING_SUMMARY}}": finding_summary,
         "{{SERVICE_SUMMARY}}": service_summary,
@@ -728,9 +768,19 @@ def main():
     parser.add_argument("--start", help='Assessment start date, e.g. "01 June 2026" (default: same as end date)')
     parser.add_argument("--end", help='Assessment end date, e.g. "04 June 2026" (default: scan date)')
     parser.add_argument("--date", help='Report date, e.g. "29 June 2026" (default: today)')
-    parser.add_argument("--user-id", default="[AWS User ID]", help="AWS user ID used for the scan (scope table)")
-    parser.add_argument("--caller-arn", help="Caller identity ARN used for the scan (scope table)")
+    parser.add_argument("--user-id",
+                        help="AWS user ID used for the scan (default: from sts get-caller-identity; redacted)")
+    parser.add_argument("--caller-arn",
+                        help="Caller identity ARN used for the scan (default: from sts get-caller-identity; "
+                             "account ID redacted)")
+    parser.add_argument("--profile", help="AWS CLI profile used to look up the caller identity")
+    parser.add_argument("--no-aws", action="store_true",
+                        help="Do not call AWS STS for the caller identity")
     args = parser.parse_args()
+
+    args.identity = {}
+    if not args.no_aws and not (args.user_id and args.caller_arn):
+        args.identity = get_caller_identity(args.profile)
 
     src = Path(args.folder)
     out = Path(args.output)
